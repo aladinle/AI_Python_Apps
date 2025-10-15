@@ -22,10 +22,12 @@ jobs:
 
     - name: Install dependencies
       run: |
+        cd AI_ChatBot
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
         pip install pytest pytest-mock
 
     - name: Run tests
       run: |
+        cd AI_ChatBot
         pytest test-chatbot.py -v
