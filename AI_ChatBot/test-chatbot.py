@@ -1,14 +1,13 @@
-# test chatbot.py
-from chatbot import load_gpt_answer
+# test_chatbot.py
+from chatbot import chat_with_gpt
 import openai
 
 def test_chat_with_gpt_mock(mocker):
     mock_response = mocker.Mock()
     mock_response.choices = [mocker.Mock()]
-    mock_response.choices[0].message.content = "Hello! How can I help you?"
+    mock_response.choices[0].message.content = "Hello! How can I assist you today?"
     
-    # Patch the OpenAI API call
-    mocker.patch.object(openai.ChatCompletion, "create", return_value=mock_response)
+    mocker.patch("openai.chat.completions.create", return_value=mock_response)
     
-    result = load_gpt_answer("Hello AI!")
+    result = chat_with_gpt("Hello AI!")
     assert result == "Hello! How can I assist you today?"
