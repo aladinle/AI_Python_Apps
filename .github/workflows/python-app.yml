@@ -24,7 +24,7 @@ jobs:
       run: |
         cd AI_ChatBot
         python -m pip install --upgrade pip
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        pip install -r requirements.txt
         pip install pytest pytest-mock
 
     - name: Run tests
