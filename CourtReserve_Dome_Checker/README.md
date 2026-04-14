@@ -52,6 +52,10 @@ If this project lives inside a larger monorepo, set Render's Root Directory to `
 ```bash
 ALLOW_ORIGINS=*
 LOG_LEVEL=INFO
+COURTRESERVE_NAVIGATION_TIMEOUT_MS=90000
+COURTRESERVE_SELECTOR_TIMEOUT_MS=90000
+COURTRESERVE_POST_LOAD_WAIT_MS=2500
+COURTRESERVE_FETCH_RETRIES=2
 ```
 
 ## API response shape
@@ -77,4 +81,5 @@ LOG_LEVEL=INFO
 - The scraper runs headless in production and does not require the desktop UI.
 - Tkinter is optional now, so the API can start on Linux hosts like Render even when GUI libraries are unavailable.
 - The browser stays hidden by default. `show_browser=true` is only for local debugging.
+- The scraper no longer waits for Playwright `networkidle`, because CourtReserve keeps background connections open and that can cause false timeouts on Render.
 - If CourtReserve changes the widget markup, the selector logic may need a refresh.

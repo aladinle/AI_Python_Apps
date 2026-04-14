@@ -1,5 +1,6 @@
 import argparse
 import logging
+import os
 import queue
 import re
 import sys
@@ -19,6 +20,10 @@ except ImportError:
 
 PUBLIC_WIDGET_URL = "https://widgets.courtreserve.com/Online/Public/EmbedCode/13095/41105"
 LOGGER = logging.getLogger(__name__)
+DEFAULT_NAVIGATION_TIMEOUT_MS = int(os.getenv("COURTRESERVE_NAVIGATION_TIMEOUT_MS", "90000"))
+DEFAULT_SELECTOR_TIMEOUT_MS = int(os.getenv("COURTRESERVE_SELECTOR_TIMEOUT_MS", "90000"))
+DEFAULT_POST_LOAD_WAIT_MS = int(os.getenv("COURTRESERVE_POST_LOAD_WAIT_MS", "2500"))
+DEFAULT_FETCH_RETRIES = max(1, int(os.getenv("COURTRESERVE_FETCH_RETRIES", "2")))
 
 TIME_PATTERN = re.compile(
     r"\b(?:1[0-2]|0?[1-9])(?::[0-5]\d)?\s?(?:AM|PM)\b",
@@ -371,43 +376,65 @@ def fetch_available_slots(headless: bool = True) -> list[TimeSlot]:
         with sync_playwright() as playwright:
             launch_options = {
                 "headless": headless,
-                "args": ["--disable-blink-features=AutomationControlled"],
+                "args": [
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-dev-shm-usage",
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                ],
             }
-            try:
-                browser = playwright.chromium.launch(channel="chrome", **launch_options)
-            except Exception:
-                browser = playwright.chromium.launch(**launch_options)
+            last_timeout_error: PlaywrightTimeoutError | None = None
 
-            context = browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/135.0.0.0 Safari/537.36"
-                ),
-                viewport={"width": 1800, "height": 1400},
-                locale="en-US",
-                timezone_id="America/Los_Angeles",
-            )
-            page = context.new_page()
-            page.add_init_script(ANTI_BOT_INIT_SCRIPT)
-            try:
-                return fetch_dome_pickleball_slots(page)
-            finally:
-                context.close()
-                browser.close()
+            for attempt in range(1, DEFAULT_FETCH_RETRIES + 1):
+                LOGGER.info("Fetching CourtReserve availability attempt %s/%s", attempt, DEFAULT_FETCH_RETRIES)
+                try:
+                    try:
+                        browser = playwright.chromium.launch(channel="chrome", **launch_options)
+                    except Exception:
+                        browser = playwright.chromium.launch(**launch_options)
+
+                    context = browser.new_context(
+                        user_agent=(
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/135.0.0.0 Safari/537.36"
+                        ),
+                        viewport={"width": 1800, "height": 1400},
+                        locale="en-US",
+                        timezone_id="America/Los_Angeles",
+                    )
+                    page = context.new_page()
+                    page.set_default_navigation_timeout(DEFAULT_NAVIGATION_TIMEOUT_MS)
+                    page.set_default_timeout(DEFAULT_SELECTOR_TIMEOUT_MS)
+                    page.add_init_script(ANTI_BOT_INIT_SCRIPT)
+                    try:
+                        return fetch_dome_pickleball_slots(page)
+                    finally:
+                        context.close()
+                        browser.close()
+                except PlaywrightTimeoutError as exc:
+                    last_timeout_error = exc
+                    LOGGER.warning("CourtReserve attempt %s timed out: %s", attempt, exc)
+                    if attempt == DEFAULT_FETCH_RETRIES:
+                        break
+
+            assert last_timeout_error is not None
+            raise last_timeout_error
     except PlaywrightTimeoutError as exc:
         raise RuntimeError(f"Timed out while loading The Dome pages: {exc}") from exc
 
 
 def fetch_dome_pickleball_slots(page) -> list[TimeSlot]:
     page.goto(PUBLIC_WIDGET_URL, wait_until="domcontentloaded")
-    page.wait_for_load_state("networkidle")
-    page.wait_for_selector("#CourtsScheduler .k-scheduler-layout", timeout=60000)
+    page.wait_for_load_state("load")
+    page.wait_for_selector("#CourtsScheduler", state="attached")
+    page.wait_for_selector("#CourtsScheduler .k-scheduler-layout", state="visible")
+    page.wait_for_selector("#CourtsScheduler .k-scheduler-times .fn-kendo-time", state="attached")
     try:
-        page.wait_for_selector("#CourtsScheduler .k-scheduler-content .k-event", timeout=10000)
+        page.wait_for_selector("#CourtsScheduler .k-scheduler-content .k-event", timeout=15000)
     except Exception:
         pass
-    page.wait_for_timeout(3000)
+    page.wait_for_timeout(DEFAULT_POST_LOAD_WAIT_MS)
 
     schedule_snapshot = page.evaluate(
         """
