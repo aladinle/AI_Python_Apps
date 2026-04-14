@@ -3,6 +3,7 @@ import os
 import threading
 from datetime import datetime, timezone
 from html import escape
+from time import monotonic
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,6 +19,14 @@ from courtreserve_dome_checker import (
 
 LOGGER = logging.getLogger("courtreserve.api")
 FETCH_LOCK = threading.Lock()
+CACHE_LOCK = threading.Lock()
+CACHE_TTL_SECONDS = max(1, int(os.getenv("CACHE_TTL_SECONDS", "180")))
+MAX_STALE_SECONDS = max(CACHE_TTL_SECONDS, int(os.getenv("MAX_STALE_SECONDS", "900")))
+
+
+_cache_payload: dict[str, object] | None = None
+_cache_fetched_at_monotonic: float | None = None
+_refresh_in_progress = False
 
 
 def configure_logging() -> None:
@@ -31,6 +40,42 @@ def parse_allowed_origins() -> list[str]:
     raw_value = os.getenv("ALLOW_ORIGINS", "*")
     origins = [value.strip() for value in raw_value.split(",") if value.strip()]
     return origins or ["*"]
+
+
+def get_cache_age_seconds() -> float | None:
+    with CACHE_LOCK:
+        if _cache_fetched_at_monotonic is None:
+            return None
+        return max(0.0, monotonic() - _cache_fetched_at_monotonic)
+
+
+def get_cached_payload() -> tuple[dict[str, object] | None, float | None]:
+    with CACHE_LOCK:
+        if _cache_payload is None or _cache_fetched_at_monotonic is None:
+            return None, None
+        return dict(_cache_payload), max(0.0, monotonic() - _cache_fetched_at_monotonic)
+
+
+def store_cached_payload(payload: dict[str, object]) -> None:
+    global _cache_payload, _cache_fetched_at_monotonic
+    with CACHE_LOCK:
+        _cache_payload = dict(payload)
+        _cache_fetched_at_monotonic = monotonic()
+
+
+def mark_refresh_started() -> bool:
+    global _refresh_in_progress
+    with CACHE_LOCK:
+        if _refresh_in_progress:
+            return False
+        _refresh_in_progress = True
+        return True
+
+
+def mark_refresh_finished() -> None:
+    global _refresh_in_progress
+    with CACHE_LOCK:
+        _refresh_in_progress = False
 
 
 configure_logging()
@@ -108,9 +153,58 @@ def fetch_availability_payload(show_browser: bool) -> dict[str, object]:
     }
 
 
+def refresh_cache(show_browser: bool = False) -> dict[str, object]:
+    try:
+        payload = fetch_availability_payload(show_browser=show_browser)
+        store_cached_payload(payload)
+        return payload
+    finally:
+        mark_refresh_finished()
+
+
+def refresh_cache_in_background(show_browser: bool = False) -> None:
+    if not mark_refresh_started():
+        return
+
+    def worker() -> None:
+        try:
+            refresh_cache(show_browser=show_browser)
+        except Exception:
+            LOGGER.exception("Background cache refresh failed")
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def get_availability_payload(force_refresh: bool = False, show_browser: bool = False) -> dict[str, object]:
+    cached_payload, cache_age_seconds = get_cached_payload()
+    if not force_refresh and cached_payload is not None and cache_age_seconds is not None:
+        cached_payload["cached"] = True
+        cached_payload["cache_age_seconds"] = round(cache_age_seconds, 1)
+        if cache_age_seconds <= CACHE_TTL_SECONDS:
+            return cached_payload
+        if cache_age_seconds <= MAX_STALE_SECONDS:
+            refresh_cache_in_background(show_browser=show_browser)
+            return cached_payload
+
+    if not mark_refresh_started():
+        cached_payload, cache_age_seconds = get_cached_payload()
+        if cached_payload is not None and cache_age_seconds is not None:
+            cached_payload["cached"] = True
+            cached_payload["cache_age_seconds"] = round(cache_age_seconds, 1)
+            return cached_payload
+        raise RuntimeError("Availability refresh is already in progress. Please retry in a moment.")
+
+    payload = refresh_cache(show_browser=show_browser)
+    payload["cached"] = False
+    payload["cache_age_seconds"] = 0.0
+    return payload
+
+
 def render_availability_html(payload: dict[str, object]) -> str:
     date_label = escape(str(payload["date_label"]))
     generated_at = escape(str(payload["generated_at"]))
+    cache_age_seconds = escape(str(payload.get("cache_age_seconds", 0.0)))
+    cached_text = "yes" if payload.get("cached") else "no"
     courts = payload["courts"]
     assert isinstance(courts, dict)
 
@@ -202,6 +296,8 @@ def render_availability_html(payload: dict[str, object]) -> str:
           <h1>Dome Pickleball Availability</h1>
           <p class="meta">Date: {date_label}</p>
           <p class="meta">Generated at: {generated_at}</p>
+          <p class="meta">Cached response: {cached_text}</p>
+          <p class="meta">Cache age: {cache_age_seconds} seconds</p>
           <p class="meta">JSON version: <a href="/available-times.json">/available-times.json</a></p>
         </section>
         <section class="courts">
@@ -216,9 +312,10 @@ def render_availability_html(payload: dict[str, object]) -> str:
 @app.get("/available-times", response_class=HTMLResponse)
 def available_times(
     show_browser: bool = Query(default=False, description="Debug only. Opens a visible browser."),
+    force_refresh: bool = Query(default=False, description="Bypass cache and fetch live availability."),
 ) -> HTMLResponse:
     try:
-        payload = fetch_availability_payload(show_browser=show_browser)
+        payload = get_availability_payload(force_refresh=force_refresh, show_browser=show_browser)
         return HTMLResponse(render_availability_html(payload))
     except Exception as exc:
         LOGGER.exception("Failed to fetch court availability")
@@ -228,9 +325,13 @@ def available_times(
 @app.get("/available-times.json")
 def available_times_json(
     show_browser: bool = Query(default=False, description="Debug only. Opens a visible browser."),
+    force_refresh: bool = Query(default=False, description="Bypass cache and fetch live availability."),
 ) -> dict[str, object]:
     try:
-        return fetch_availability_payload(show_browser=show_browser)
+        return get_availability_payload(force_refresh=force_refresh, show_browser=show_browser)
     except Exception as exc:
         LOGGER.exception("Failed to fetch court availability")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+app.add_event_handler("startup", lambda: refresh_cache_in_background(show_browser=False))

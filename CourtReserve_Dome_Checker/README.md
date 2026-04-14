@@ -56,6 +56,8 @@ COURTRESERVE_NAVIGATION_TIMEOUT_MS=90000
 COURTRESERVE_SELECTOR_TIMEOUT_MS=90000
 COURTRESERVE_POST_LOAD_WAIT_MS=2500
 COURTRESERVE_FETCH_RETRIES=2
+CACHE_TTL_SECONDS=180
+MAX_STALE_SECONDS=900
 ```
 
 ## API response shape
@@ -82,4 +84,5 @@ COURTRESERVE_FETCH_RETRIES=2
 - Tkinter is optional now, so the API can start on Linux hosts like Render even when GUI libraries are unavailable.
 - The browser stays hidden by default. `show_browser=true` is only for local debugging.
 - The scraper no longer waits for Playwright `networkidle`, because CourtReserve keeps background connections open and that can cause false timeouts on Render.
+- The API now caches availability in memory to improve latency. Fresh requests return from cache for `CACHE_TTL_SECONDS`, and slightly older cached data can still be served while a background refresh runs.
 - If CourtReserve changes the widget markup, the selector logic may need a refresh.
