@@ -37,7 +37,6 @@ app = FastAPI(
     title="CourtReserve Dome Checker API",
     version="1.0.0",
     description="Production API for public pickleball court availability at The Dome.",
-    message="CourtReserve Done Checker API is running.",
 )
 
 app.add_middleware(
