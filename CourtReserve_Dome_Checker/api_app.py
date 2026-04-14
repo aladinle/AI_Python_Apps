@@ -334,4 +334,6 @@ def available_times_json(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-app.add_event_handler("startup", lambda: refresh_cache_in_background(show_browser=False))
+@app.on_event("startup")
+def warm_cache_on_startup() -> None:
+    refresh_cache_in_background(show_browser=False)
