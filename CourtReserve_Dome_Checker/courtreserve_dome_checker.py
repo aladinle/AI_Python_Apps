@@ -1,17 +1,24 @@
 import argparse
+import logging
 import queue
 import re
 import sys
 import threading
-import tkinter as tk
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from tkinter import ttk
 from typing import Iterable
+
+try:
+    import tkinter as tk
+    from tkinter import ttk
+except ImportError:
+    tk = None
+    ttk = None
 
 
 PUBLIC_WIDGET_URL = "https://widgets.courtreserve.com/Online/Public/EmbedCode/13095/41105"
+LOGGER = logging.getLogger(__name__)
 
 TIME_PATTERN = re.compile(
     r"\b(?:1[0-2]|0?[1-9])(?::[0-5]\d)?\s?(?:AM|PM)\b",
@@ -323,6 +330,29 @@ def format_clock_time(hour: int, minute: int, period: str, include_period: bool)
     return f"{hour}{minute_text}{suffix}"
 
 
+def format_24_hour_time(total_minutes: int) -> str:
+    normalized = total_minutes % (24 * 60)
+    hours_24, minutes = divmod(normalized, 60)
+    return f"{hours_24:02d}:{minutes:02d}"
+
+
+def serialize_time_range(time_range: TimeRange) -> dict[str, str]:
+    return {
+        "start": format_24_hour_time(time_range.start_minutes),
+        "end": format_24_hour_time(time_range.end_minutes),
+        "label": time_range.label,
+    }
+
+
+def serialize_court_time_ranges(
+    court_ranges: Mapping[str, list[TimeRange]],
+) -> dict[str, list[dict[str, str]]]:
+    return {
+        court_name: [serialize_time_range(time_range) for time_range in ranges]
+        for court_name, ranges in court_ranges.items()
+    }
+
+
 def get_today_label() -> str:
     return datetime.now().strftime("%A, %B %d")
 
@@ -543,6 +573,10 @@ def print_slots(slots: list[TimeSlot]) -> None:
 
 class DomeCheckerApp:
     def __init__(self) -> None:
+        if tk is None or ttk is None:
+            raise RuntimeError(
+                "Tkinter is not available in this environment. Use --cli or run the FastAPI app instead."
+            )
         self.root = tk.Tk()
         self.root.title("The Dome Pickleball Times")
         self.root.geometry("460x520")
@@ -692,6 +726,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     args = build_parser().parse_args()
 
     if args.cli:

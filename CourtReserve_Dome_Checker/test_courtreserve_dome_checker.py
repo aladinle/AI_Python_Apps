@@ -4,6 +4,7 @@ from courtreserve_dome_checker import (
     build_court_ranges_from_schedule_snapshot,
     build_time_ranges,
     parse_time_range_text,
+    serialize_court_time_ranges,
     TimeRange,
     parse_available_slots,
     time_label_to_minutes,
@@ -157,4 +158,22 @@ def test_build_court_ranges_from_schedule_snapshot_matches_april_7_2026_screensh
     } == {
         "Pickleball Court #1 (Pickleball)": ["8AM-7PM", "10PM-12AM"],
         "Pickleball Court #2 (Pickleball)": ["8-10AM", "12-6PM", "10PM-12AM"],
+    }
+
+
+def test_serialize_court_time_ranges_returns_24_hour_times():
+    serialized = serialize_court_time_ranges(
+        {
+            "Pickleball Court #1 (Pickleball)": [
+                TimeRange(start_minutes=8 * 60, end_minutes=19 * 60),
+                TimeRange(start_minutes=22 * 60, end_minutes=24 * 60),
+            ]
+        }
+    )
+
+    assert serialized == {
+        "Pickleball Court #1 (Pickleball)": [
+            {"start": "08:00", "end": "19:00", "label": "8AM-7PM"},
+            {"start": "22:00", "end": "00:00", "label": "10PM-12AM"},
+        ]
     }

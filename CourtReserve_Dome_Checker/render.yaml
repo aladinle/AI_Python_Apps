@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: courtreserve-dome-checker
+    env: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: ALLOW_ORIGINS
+        value: "*"
+      - key: LOG_LEVEL
+        value: INFO
